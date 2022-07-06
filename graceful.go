@@ -14,50 +14,53 @@ import (
 )
 
 var (
-	listenTCP          = make(map[string]net.Listener)
-	listenTCPPtrOffset = make(map[string]uint)
-	listenUDP          = make(map[string]net.PacketConn)
-	listenUDPPtrOffset = make(map[string]uint)
+	listenTCP       = make(map[string]net.Listener)
+	listenUDP       = make(map[string]net.PacketConn)
+	listenPtrOffset = make(map[string]uint)
 )
 
 //ListenTCP 监听TCP
 func ListenTCP(network, addr string) (net.Listener, error) {
 	var err error
+	var flag = "tcp@" + addr
 	// 设置监听器的监听对象（新建的或已存在的 socket 描述符）
-	if os.Getenv("GRACEFUL-TCP-WORK") == "true" {
+	if os.Getenv("GRACEFUL-WORK") == "true" {
 		// 子进程监听父进程传递的 socket 描述符
 		// 子进程的 0, 1, 2 是预留给标准输入、标准输出、错误输出
 		// 子进程 3 开始传递 socket 描述符
-		for i, addr := range strings.Split(os.Getenv("GRACEFUL-TCP-SERVES"), ",") {
-			listenTCPPtrOffset[addr] = uint(i)
+		for index, flag := range strings.Split(os.Getenv("GRACEFUL-SERVES"), ",") {
+			listenPtrOffset[flag] = uint(index)
 		}
-		f := os.NewFile(uintptr(3+listenTCPPtrOffset[addr]), "")
-		listenTCP[addr], err = net.FileListener(f)
+		f := os.NewFile(uintptr(3+listenPtrOffset[flag]), "")
+		listenTCP[flag], err = net.FileListener(f)
 	} else {
 		// 父进程监听新建的 socket 描述符
-		listenTCP[addr], err = net.Listen(network, addr)
+		listenPtrOffset[flag] = uint(len(listenTCP) + len(listenUDP))
+		listenTCP[flag], err = net.Listen(network, addr)
 	}
-	return listenTCP[addr], err
+	return listenTCP[flag], err
 }
 
 //ListenUDP 监听UDP
 func ListenUDP(network, addr string) (net.PacketConn, error) {
 	var err error
+	var flag = "udp@" + addr
 	// 设置监听器的监听对象（新建的或已存在的 socket 描述符）
-	if os.Getenv("GRACEFUL-UDP-WORK") == "true" {
+	if os.Getenv("GRACEFUL-WORK") == "true" {
 		// 子进程监听父进程传递的 socket 描述符
 		// 子进程的 0, 1, 2 是预留给标准输入、标准输出、错误输出
 		// 子进程 3 开始传递 socket 描述符
-		for i, addr := range strings.Split(os.Getenv("GRACEFUL-UDP-SERVES"), ",") {
-			listenTCPPtrOffset[addr] = uint(i)
+		for index, flag := range strings.Split(os.Getenv("GRACEFUL-SERVES"), ",") {
+			listenPtrOffset[flag] = uint(index)
 		}
-		f := os.NewFile(uintptr(3+listenTCPPtrOffset[addr]), "")
-		listenUDP[addr], err = net.FilePacketConn(f)
+		f := os.NewFile(uintptr(3+listenPtrOffset[flag]), "")
+		listenUDP[flag], err = net.FilePacketConn(f)
 	} else {
 		// 父进程监听新建的 socket 描述符
-		listenUDP[addr], err = net.ListenPacket(network, addr)
+		listenPtrOffset[flag] = uint(len(listenTCP) + len(listenUDP))
+		listenUDP[flag], err = net.ListenPacket(network, addr)
 	}
-	return listenUDP[addr], err
+	return listenUDP[flag], err
 }
 
 func HandleSignal(fn func(ctx context.Context)) {
@@ -72,13 +75,9 @@ func HandleSignal(fn func(ctx context.Context)) {
 			fn(ctx)
 			return
 		case syscall.SIGHUP: // 进程热重启
-			err := reloadTCP()
+			err := reload()
 			if err != nil {
-				log.Fatalf("HandleSignal.SIGHUP reloadTCP: %v\n", err)
-			}
-			err = reloadUDP()
-			if err != nil {
-				log.Fatalf("HandleSignal.SIGHUP reloadUDP: %v\n", err)
+				log.Fatalf("HandleSignal.SIGHUP reload: %v\n", err)
 			}
 			fn(ctx)
 			return
@@ -86,12 +85,32 @@ func HandleSignal(fn func(ctx context.Context)) {
 	}
 }
 
-func reloadTCP() error {
-	var files = make([]*os.File, len(listenTCPPtrOffset))
-	var serves = make([]string, len(listenTCPPtrOffset))
+func reload() error {
+	var total = len(listenPtrOffset)
+	var files = make([]*os.File, total)
+	var serves = make([]string, total)
+	var err = reloadTCP(files, serves)
+	if err != nil {
+		return err
+	}
+	err = reloadUDP(files, serves)
+	if err != nil {
+		return err
+	}
+	var env = append(os.Environ(), "GRACEFUL-WORK=true")
+	if len(serves) > 0 {
+		env = append(env, fmt.Sprintf("GRACEFUL-SERVES=%s", strings.Join(serves, ",")))
+	}
+	return command(files, env)
+}
+
+func reloadTCP(files []*os.File, serves []string) error {
 	var rErr error
-	for addr, i := range listenTCPPtrOffset {
-		ln, ok := listenTCP[addr].(*net.TCPListener)
+	for flag, index := range listenPtrOffset {
+		if !strings.Contains(flag, "tcp@") {
+			continue
+		}
+		ln, ok := listenTCP[flag].(*net.TCPListener)
 		if !ok {
 			rErr = errors.New("listener is not tcp listener")
 			break
@@ -102,25 +121,19 @@ func reloadTCP() error {
 			rErr = err
 			break
 		}
-		files[i] = f
-		serves[i] = addr
+		files[index] = f
+		serves[index] = flag
 	}
-	if rErr != nil {
-		return rErr
-	}
-	var env = append(os.Environ(), "GRACEFUL-TCP-WORK=true")
-	if len(serves) > 0 {
-		env = append(env, fmt.Sprintf("GRACEFUL-TCP-SERVES=%s", strings.Join(serves, ",")))
-	}
-	return command(files, env)
+	return rErr
 }
 
-func reloadUDP() error {
-	var files = make([]*os.File, len(listenUDPPtrOffset))
-	var serves = make([]string, len(listenUDPPtrOffset))
+func reloadUDP(files []*os.File, serves []string) error {
 	var rErr error
-	for addr, i := range listenUDPPtrOffset {
-		ln, ok := listenUDP[addr].(*net.UDPConn)
+	for flag, index := range listenPtrOffset {
+		if !strings.Contains(flag, "udp@") {
+			continue
+		}
+		ln, ok := listenUDP[flag].(*net.UDPConn)
 		if !ok {
 			rErr = errors.New("listener is not udp listener")
 			break
@@ -131,17 +144,10 @@ func reloadUDP() error {
 			rErr = err
 			break
 		}
-		files[i] = f
-		serves[i] = addr
+		files[index] = f
+		serves[index] = flag
 	}
-	if rErr != nil {
-		return rErr
-	}
-	var env = append(os.Environ(), "GRACEFUL-UDP-WORK=true")
-	if len(serves) > 0 {
-		env = append(env, fmt.Sprintf("GRACEFUL-UDP-SERVES=%s", strings.Join(serves, ",")))
-	}
-	return command(files, env)
+	return rErr
 }
 
 func command(files []*os.File, env []string) error {
