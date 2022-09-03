@@ -24,12 +24,12 @@ func ListenTCP(network, addr string) (net.Listener, error) {
 	var err error
 	var flag = "tcp@" + addr
 	// 设置监听器的监听对象（新建的或已存在的 socket 描述符）
-	if os.Getenv("GRACEFUL-WORK") == "true" {
+	if os.Getenv("GRACEFUL_CONTINUE") == "true" {
 		// 子进程监听父进程传递的 socket 描述符
 		// 子进程的 0, 1, 2 是预留给标准输入、标准输出、错误输出
 		// 子进程 3 开始传递 socket 描述符
-		for index, flag := range strings.Split(os.Getenv("GRACEFUL-SERVES"), ",") {
-			listenPtrOffset[flag] = uint(index)
+		for i, f := range strings.Split(os.Getenv("GRACEFUL_SOCKET"), ",") {
+			listenPtrOffset[f] = uint(i)
 		}
 		f := os.NewFile(uintptr(3+listenPtrOffset[flag]), "")
 		listenTCP[flag], err = net.FileListener(f)
@@ -46,12 +46,12 @@ func ListenUDP(network, addr string) (net.PacketConn, error) {
 	var err error
 	var flag = "udp@" + addr
 	// 设置监听器的监听对象（新建的或已存在的 socket 描述符）
-	if os.Getenv("GRACEFUL-WORK") == "true" {
+	if os.Getenv("GRACEFUL_CONTINUE") == "true" {
 		// 子进程监听父进程传递的 socket 描述符
 		// 子进程的 0, 1, 2 是预留给标准输入、标准输出、错误输出
 		// 子进程 3 开始传递 socket 描述符
-		for index, flag := range strings.Split(os.Getenv("GRACEFUL-SERVES"), ",") {
-			listenPtrOffset[flag] = uint(index)
+		for i, f := range strings.Split(os.Getenv("GRACEFUL_SOCKET"), ",") {
+			listenPtrOffset[f] = uint(i)
 		}
 		f := os.NewFile(uintptr(3+listenPtrOffset[flag]), "")
 		listenUDP[flag], err = net.FilePacketConn(f)
@@ -89,7 +89,8 @@ func reload() error {
 	var total = len(listenPtrOffset)
 	var files = make([]*os.File, total)
 	var serves = make([]string, total)
-	var err = reloadTCP(files, serves)
+
+	err := reloadTCP(files, serves)
 	if err != nil {
 		return err
 	}
@@ -97,9 +98,9 @@ func reload() error {
 	if err != nil {
 		return err
 	}
-	var env = append(os.Environ(), "GRACEFUL-WORK=true")
+	var env = append(os.Environ(), "GRACEFUL_CONTINUE=true")
 	if len(serves) > 0 {
-		env = append(env, fmt.Sprintf("GRACEFUL-SERVES=%s", strings.Join(serves, ",")))
+		env = append(env, fmt.Sprintf("GRACEFUL_SOCKET=%s", strings.Join(serves, ",")))
 	}
 	return command(files, env)
 }
